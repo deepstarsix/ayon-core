@@ -572,6 +572,8 @@ class ExtractReview(pyblish.api.InstancePlugin):
             output_name += output_def["filename_suffix"]
             if temp_data.without_handles:
                 output_name += "_noHandles"
+            
+            output_name_delivery = output_name.replace("delivery_", "")
 
             # add outputName to anatomy format fill_data
             fill_data.update({
@@ -628,7 +630,7 @@ class ExtractReview(pyblish.api.InstancePlugin):
 
             new_repre.update({
                 "fps": temp_data.fps,
-                "name": "{}_{}".format(output_name, output_ext),
+                "name": output_name_delivery,
                 "outputName": output_name,
                 "outputDef": output_def,
                 "ffmpeg_cmd": subprcs_cmd

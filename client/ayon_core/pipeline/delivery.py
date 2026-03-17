@@ -3,8 +3,10 @@ import os
 import copy
 import shutil
 import glob
+import csv
 import collections
-from typing import Dict, Any, Iterable
+from datetime import datetime
+from typing import Dict, Any, Iterable, List
 
 import clique
 import ayon_api
@@ -17,6 +19,23 @@ from .template_data import (
     get_task_template_data,
 )
 
+CSV_FIELDS = [
+    "Submission Date",
+    "Vendor",
+    "Shot name",
+    "Submission status",
+    "Submission filename",
+    "Submission version",
+    "Submission format",
+    "Frame Start",
+    "Frame End",
+    "Handle Start",
+    "Handle End",
+    "Vendor Submission Note",
+]
+
+# Formats to track in delivery CSV
+TRACKABLE_FORMATS = {"exr", "mov", "mp4", "dnxhd", "h264", "avi", "mxf"}
 
 def _copy_file(src_path, dst_path):
     """Hardlink file if possible(to save space), copy if not.
@@ -34,6 +53,203 @@ def _copy_file(src_path, dst_path):
         )
     except OSError:
         shutil.copyfile(src_path, dst_path)
+
+
+def get_delivery_csv_root(delivery_path, anatomy=None):
+    """
+    Returns the "_delivery" directory at the project level.
+    Example: /mnt/Post/Developing/shots/sh010/file.exr -> /mnt/Post/Developing/_delivery
+
+    Args:
+        delivery_path (str): Path to the delivered file
+        anatomy (Anatomy, optional): Project anatomy object to get root paths
+
+    Returns:
+        str: Path to the _delivery directory at project root
+    """
+    abs_path = os.path.abspath(delivery_path)
+    project_root = None
+
+    # Try to get project root from anatomy first
+    if anatomy:
+        roots = anatomy.roots
+
+        # Try to find which root the delivery_path belongs to
+        for root_name, root_item in roots.items():
+            root_path = str(root_item)
+            root_path = os.path.abspath(root_path)
+
+            if abs_path.startswith(root_path):
+                # Found matching root, now get the project folder
+                relative_path = abs_path[len(root_path):].lstrip(os.sep)
+
+                # Get the first directory component (the project name)
+                path_parts = relative_path.split(os.sep)
+                if path_parts and path_parts[0]:
+                    project_folder = path_parts[0]
+                    project_root = os.path.join(root_path, project_folder)
+                else:
+                    # Fallback to just the root if no project folder found
+                    project_root = root_path
+                break
+
+        # Fallback to first available root if no match found
+        if not project_root and roots:
+            first_root = str(list(roots.values())[0])
+            project_root = os.path.abspath(first_root)
+
+    # Fallback to path parsing if anatomy not available or didn't work
+    if not project_root:
+        parts = abs_path.split(os.sep)
+
+        if os.name == "nt":
+            # Windows: C:\path\to\project\file
+            parts = [p for p in parts if p]
+            if len(parts) >= 3:
+                project_root = os.path.join(parts[0] + os.sep, parts[1], parts[2])
+            elif len(parts) >= 2:
+                project_root = os.path.join(parts[0] + os.sep, parts[1])
+            elif len(parts) == 1:
+                project_root = parts[0] + os.sep
+            else:
+                project_root = os.getcwd()
+        else:
+            # Linux/Mac: /mnt/Post/Developing/...
+            meaningful_parts = [p for p in parts if p]
+
+            if len(meaningful_parts) >= 3:
+                project_root = os.sep + os.path.join(
+                    meaningful_parts[0],
+                    meaningful_parts[1],
+                    meaningful_parts[2]
+                )
+            elif len(meaningful_parts) >= 2:
+                project_root = os.sep + os.path.join(
+                    meaningful_parts[0],
+                    meaningful_parts[1]
+                )
+            elif len(meaningful_parts) == 1:
+                project_root = os.sep + meaningful_parts[0]
+            else:
+                project_root = os.sep
+
+    delivery_root = os.path.join(project_root, "_delivery")
+    return delivery_root
+
+
+def append_exr_to_global_csv(csv_path, row_data):
+    """Append delivery information to global CSV, avoiding duplicates."""
+    # Avoid duplicates: read existing CSV and only write if not present
+    existing_rows = set()
+    if os.path.exists(csv_path):
+        with open(csv_path, "r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                key = tuple(row[field] for field in CSV_FIELDS)
+                existing_rows.add(key)
+
+    key = tuple(str(row_data.get(field, "")) for field in CSV_FIELDS)
+
+    if key in existing_rows:
+        return  # Don't write duplicate row
+
+    write_header = not os.path.exists(csv_path)
+
+    with open(csv_path, mode="a", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=CSV_FIELDS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row_data)
+
+
+def write_debug_log(debug_info, csv_path):
+    """
+    Writes debug log to a .txt file next to the delivery_log.csv.
+    """
+    log_path = os.path.splitext(csv_path)[0] + "_debug.txt"
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(
+            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {debug_info}\n")
+
+
+def extract_frame_from_filename(filename: str) -> str:
+    """Extract the frame number from filename, expects frame just before extension, separated by dot."""
+    base = os.path.basename(filename)
+    parts = base.split('.')
+    numeric_parts = [part for part in parts[:-1] if part.isdigit()]
+    if numeric_parts:
+        return numeric_parts[-1]
+    return ""
+
+
+def sort_files_by_frame(files):
+    """Sort files by frame number."""
+    def get_frame_int(fname):
+        frame = extract_frame_from_filename(fname)
+        try:
+            return int(frame)
+        except Exception:
+            return -1
+    return sorted(files, key=get_frame_int)
+
+
+def create_submission_row(
+    context: dict,
+    version: str,
+    file_format: str,
+    sequence_files: List[str],
+    description: str = "",
+    frame_start: str = "",
+    frame_end: str = "",
+    handle_start: str = "",
+    handle_end: str = "",
+    debug_log: List[str] = None
+) -> dict:
+    """
+    Create a CSV row for delivery submission tracking.
+
+    Args:
+        context: Representation context dictionary
+        version: Version number
+        file_format: File format/extension (e.g., 'exr', 'mov', 'h264')
+        sequence_files: List of file paths in the sequence
+        description: Version description/comment
+        frame_start: Frame start number
+        frame_end: Frame end number
+        handle_start: Handle start number
+        handle_end: Handle end number
+        debug_log: Optional debug log list
+
+    Returns:
+        Dictionary with CSV row data
+    """
+    version_padded = f"v{int(version):03}"
+    folder = context.get("folder", {}).get("name", "")
+
+    shot_name = f"{folder}"
+    submission_status = "for review"
+    submission_filename = f"{folder}_comp_POSTER_{version_padded}"
+    submission_version = version_padded
+    submission_format = file_format.upper()  # MOV, EXR, H264, etc.
+    vendor_note = description
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    vendor = "Poster"
+
+    return {
+        "Submission Date": today,
+        "Vendor": vendor,
+        "Shot name": shot_name,
+        "Submission status": submission_status,
+        "Submission filename": submission_filename,
+        "Submission version": submission_version,
+        "Submission format": submission_format,
+        "Frame Start": frame_start,
+        "Frame End": frame_end,
+        "Handle Start": handle_start,
+        "Handle End": handle_end,
+        "Vendor Submission Note": vendor_note,
+    }
 
 
 def get_format_dict(anatomy, location_path):
@@ -180,6 +396,77 @@ def deliver_single_file(
     log.debug("Copying single: {} -> {}".format(src_path, delivery_path))
     _copy_file(src_path, delivery_path)
 
+    # Delivery CSV logging for trackable formats
+    context = repre["context"]
+    ext = context.get("ext", "").lower()
+
+    if ext in TRACKABLE_FORMATS:
+        version = context.get("version", "")
+
+        # Try to get description and frame data from version entity
+        description = ""
+        frame_start = ""
+        frame_end = ""
+        handle_start = ""
+        handle_end = ""
+
+        project_name = context.get("project", {}).get("name")
+        version_id = repre.get("versionId")
+
+        if project_name and version_id:
+            try:
+                version_entity = ayon_api.get_version_by_id(project_name, version_id)
+
+                if version_entity:
+                    # Get description/comment
+                    description = version_entity.get("attrib", {}).get("description", "")
+                    if not description:
+                        description = version_entity.get("attrib", {}).get("comment", "")
+                    if not description:
+                        description = version_entity.get("data", {}).get("comment", "")
+
+                    # Get frame data from attrib
+                    attrib = version_entity.get("attrib", {})
+                    frame_start = str(attrib.get("frameStart", ""))
+                    frame_end = str(attrib.get("frameEnd", ""))
+
+                    # Get handle data from attrib
+                    handle_start = str(attrib.get("handleStart", ""))
+                    handle_end = str(attrib.get("handleEnd", ""))
+
+                    # Alternative: try data section if not in attrib
+                    if not frame_start:
+                        data = version_entity.get("data", {})
+                        frame_start = str(data.get("frameStart", ""))
+                        frame_end = str(data.get("frameEnd", ""))
+                        handle_start = str(data.get("handleStart", ""))
+                        handle_end = str(data.get("handleEnd", ""))
+
+            except Exception as e:
+                log.warning(f"Could not fetch version data: {e}")
+
+        row = create_submission_row(
+            context,
+            version,
+            ext,
+            [src_path],
+            description=description,
+            frame_start=frame_start,
+            frame_end=frame_end,
+            handle_start=handle_start,
+            handle_end=handle_end
+        )
+
+        delivery_root = get_delivery_csv_root(delivery_path, anatomy)
+
+        if not os.path.exists(delivery_root):
+            os.makedirs(delivery_root, exist_ok=True)
+
+        csv_path = os.path.join(delivery_root, "delivery_log.csv")
+
+        append_exr_to_global_csv(csv_path, row)
+        write_debug_log('', csv_path)
+
     return report_items, 1
 
 
@@ -310,12 +597,15 @@ def deliver_sequence(
     src_tail = src_collection.tail
     uploaded = 0
     first_frame = min(src_collection.indexes)
+    seq_files_set = set()
+
     for index in src_collection.indexes:
         src_padding = src_collection.format("{padding}") % index
         src_file_name = "{}{}{}".format(src_head, src_padding, src_tail)
         src = os.path.normpath(
             os.path.join(dir_path, src_file_name)
         )
+        seq_files_set.add(src)
         dst_index = index
         if has_renumbered_frame:
             # Calculate offset between first frame and current frame
@@ -334,6 +624,77 @@ def deliver_sequence(
         _copy_file(src, dst)
 
         uploaded += 1
+
+    # Delivery CSV logging for trackable formats (once per sequence, not per frame)
+    seq_files = list(seq_files_set)
+    ext_clean = context.get("ext", "").lower()
+
+    if ext_clean in TRACKABLE_FORMATS and seq_files:
+        version = context.get("version", "")
+
+        # Try to get description and frame data from version entity
+        description = ""
+        frame_start = ""
+        frame_end = ""
+        handle_start = ""
+        handle_end = ""
+
+        project_name = context.get("project", {}).get("name")
+        version_id = repre.get("versionId")
+
+        if project_name and version_id:
+            try:
+                version_entity = ayon_api.get_version_by_id(project_name, version_id)
+
+                if version_entity:
+                    # Get description/comment
+                    description = version_entity.get("attrib", {}).get("description", "")
+                    if not description:
+                        description = version_entity.get("attrib", {}).get("comment", "")
+                    if not description:
+                        description = version_entity.get("data", {}).get("comment", "")
+
+                    # Get frame data from attrib
+                    attrib = version_entity.get("attrib", {})
+                    frame_start = str(attrib.get("frameStart", ""))
+                    frame_end = str(attrib.get("frameEnd", ""))
+
+                    # Get handle data from attrib
+                    handle_start = str(attrib.get("handleStart", ""))
+                    handle_end = str(attrib.get("handleEnd", ""))
+
+                    # Alternative: try data section if not in attrib
+                    if not frame_start:
+                        data = version_entity.get("data", {})
+                        frame_start = str(data.get("frameStart", ""))
+                        frame_end = str(data.get("frameEnd", ""))
+                        handle_start = str(data.get("handleStart", ""))
+                        handle_end = str(data.get("handleEnd", ""))
+
+            except Exception as e:
+                log.warning(f"Could not fetch version data: {e}")
+
+        row = create_submission_row(
+            context,
+            version,
+            ext_clean,
+            seq_files,
+            description=description,
+            frame_start=frame_start,
+            frame_end=frame_end,
+            handle_start=handle_start,
+            handle_end=handle_end
+        )
+
+        delivery_root = get_delivery_csv_root(delivery_path, anatomy)
+
+        if not os.path.exists(delivery_root):
+            os.makedirs(delivery_root, exist_ok=True)
+
+        csv_path = os.path.join(delivery_root, "delivery_log.csv")
+
+        append_exr_to_global_csv(csv_path, row)
+        write_debug_log('', csv_path)
 
     return report_items, uploaded
 

@@ -15,6 +15,7 @@ from ayon_core.lib import (
     get_ffmpeg_format_args,
 )
 from ayon_core.pipeline import publish
+from ayon_core.pipeline.anatomy import Anatomy
 from ayon_core.pipeline.publish import KnownPublishError
 
 
@@ -75,8 +76,8 @@ class ExtractReviewSlate(publish.Extractor):
             streams = get_ffprobe_streams(
                 input_path, self.log
             )
-            # get slate data
-            slate_path = self._get_slate_path(input_file, slates_data)
+            # get slate data — pass instance so we can remap the path
+            slate_path = self._get_slate_path(input_file, slates_data, instance)
             self.log.debug("_ slate_path: {}".format(slate_path))
 
             slate_width, slate_height = self._get_slates_resolution(slate_path)
@@ -386,7 +387,7 @@ class ExtractReviewSlate(publish.Extractor):
 
         self.log.debug(inst_data["representations"])
 
-    def _get_slate_path(self, input_file, slates_data):
+    def _get_slate_path(self, input_file, slates_data, instance):
         slate_path = None
         for sl_n, _slate_path in slates_data.items():
             if "*" in sl_n:
@@ -400,13 +401,36 @@ class ExtractReviewSlate(publish.Extractor):
             raise AttributeError(
                 "Missing slates paths: {}".format(slates_data))
 
+        # Remap the slate path to the current platform using AYON Anatomy.
+        try:
+            project_name = instance.context.data["projectName"]
+            anatomy = Anatomy(project_name)
+            remapped = anatomy.path_remapper(slate_path)
+            if remapped is not None:
+                self.log.debug(
+                    "Slate path remapped: '{}' -> '{}'".format(
+                        slate_path, remapped))
+                slate_path = os.path.normpath(remapped)
+            else:
+                self.log.debug(
+                    "Slate path not remapped (no matching root), "
+                    "using as-is: '{}'".format(slate_path))
+                slate_path = os.path.normpath(slate_path)
+        except Exception:
+            self.log.warning(
+                "Could not remap slate path via Anatomy, "
+                "using as-is: '{}'".format(slate_path),
+                exc_info=True
+            )
+            slate_path = os.path.normpath(slate_path)
+
         return slate_path
 
     def _get_slates_resolution(self, slate_path):
         slate_streams = get_ffprobe_streams(slate_path, self.log)
         # Try to find first stream with defined 'width' and 'height'
         # - this is to avoid order of streams where audio can be as first
-        # - there may be a better way (checking `codec_type`?)+
+        # - there may be a better way (checking `codec_type`?)
         slate_width = None
         slate_height = None
         for slate_stream in slate_streams:
@@ -560,7 +584,7 @@ class ExtractReviewSlate(publish.Extractor):
 
     def add_video_filter_args(self, args, inserting_arg):
         """
-        Fixing video filter argumets to be one long string
+        Fixing video filter arguments to be one long string
 
         Args:
             args (list): list of string arguments
