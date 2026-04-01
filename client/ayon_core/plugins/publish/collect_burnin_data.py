@@ -26,7 +26,7 @@ class CollectBurninData(pyblish.api.InstancePlugin):
 
     order = pyblish.api.CollectorOrder + 2.0299
     label = "Collect Burnin Data"
-    hosts = ["nuke", "nukeassist"]
+    hosts = ["*"]
     families = ["render", "prerender", "image"]
 
     def process(self, instance):
@@ -164,6 +164,9 @@ class CollectBurninData(pyblish.api.InstancePlugin):
            return it if the file already exists on disk.
         2. Glob ``outputDir`` for ``*.exr``, skip the slate frame file, and
            return the first remaining match.
+        3. Scan ``instance.data["representations"]`` for an EXR entry and
+           check files in its ``stagingDir``.  This covers farm publish where
+           ``path`` and ``outputDir`` are not serialised into the JSON.
         """
 
         output_dir = instance.data.get("outputDir", "")
@@ -211,6 +214,29 @@ class CollectBurninData(pyblish.api.InstancePlugin):
                     )
                     continue
                 return match
+
+        # Last resort: scan representations directly.  On farm, outputDir
+        # and path are not serialised into the publish JSON, but the
+        # representations (with their stagingDir + files list) are.
+        for repre in instance.data.get("representations", []):
+            if repre.get("ext", "").lower() != "exr":
+                continue
+            staging = repre.get("stagingDir", "")
+            if not staging or not os.path.isdir(staging):
+                continue
+            files = repre.get("files") or []
+            if isinstance(files, str):
+                files = [files]
+            for fname in sorted(files):
+                if slate_basename and fname == slate_basename:
+                    self.log.debug(
+                        "Skipping slate frame in representations: "
+                        "{}".format(fname)
+                    )
+                    continue
+                candidate = os.path.join(staging, fname)
+                if os.path.isfile(candidate):
+                    return candidate
 
         return None
 
