@@ -587,7 +587,17 @@ class ExtractReview(pyblish.api.InstancePlugin):
                 "timecode": frame_to_timecode(
                     frame=temp_data.frame_start_handle,
                     fps=float(instance.data["fps"])
-                )
+                ),
+                "exr_tape_id": instance.data.get(
+                    "burninDataMembers", {}
+                ).get("exr_tape_id", ""),
+                "source_timecode": (
+                    instance.data.get("burninDataMembers", {}).get("frame_start_tc")
+                    or frame_to_timecode(
+                        frame=temp_data.frame_start_handle,
+                        fps=float(instance.data["fps"])
+                    )
+                ),
             })
 
             try:  # temporary until oiiotool is supported cross platform

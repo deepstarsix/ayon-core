@@ -24,7 +24,7 @@ class CollectBurninData(pyblish.api.InstancePlugin):
     it is available as ``{custom[shot_description]}``.
     """
 
-    order = pyblish.api.CollectorOrder + 2.0299
+    order = pyblish.api.CollectorOrder + 2.019
     label = "Collect Burnin Data"
     hosts = ["*"]
     families = ["render", "prerender", "image"]

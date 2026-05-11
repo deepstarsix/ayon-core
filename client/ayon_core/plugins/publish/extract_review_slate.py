@@ -73,9 +73,10 @@ class ExtractReviewSlate(publish.Extractor):
                 os.path.normpath(stagingdir), repre["files"])
             self.log.debug("__ input_path: {}".format(input_path))
 
-            streams = get_ffprobe_streams(
+            ffprobe_data = get_ffprobe_data(
                 input_path, self.log
             )
+            streams = ffprobe_data.get("streams") or []
             # get slate data — pass instance so we can remap the path
             slate_path = self._get_slate_path(input_file, slates_data, instance)
             self.log.debug("_ slate_path: {}".format(slate_path))
@@ -89,7 +90,12 @@ class ExtractReviewSlate(publish.Extractor):
                 input_timecode,
                 input_frame_rate,
                 input_pixel_aspect
-            ) = self._get_video_metadata(streams)
+            ) = self._get_video_metadata(
+                streams,
+                format_tags=(
+                    (ffprobe_data.get("format") or {}).get("tags") or {}
+                )
+            )
             if input_pixel_aspect:
                 pixel_aspect = input_pixel_aspect
 
@@ -447,7 +453,7 @@ class ExtractReviewSlate(publish.Extractor):
 
         return (slate_width, slate_height)
 
-    def _get_video_metadata(self, streams):
+    def _get_video_metadata(self, streams, format_tags=None):
         input_timecode = ""
         input_width = None
         input_height = None
@@ -482,6 +488,9 @@ class ExtractReviewSlate(publish.Extractor):
 
             tags = stream.get("tags") or {}
             input_timecode = tags.get("timecode") or ""
+            # MXF stores timecode at format/container level, not stream level
+            if not input_timecode and format_tags:
+                input_timecode = format_tags.get("timecode") or ""
 
             input_frame_rate = stream.get("r_frame_rate")
             if input_frame_rate is not None:
