@@ -183,7 +183,7 @@ class ExtractReviewSlate(publish.Extractor):
                 offset_timecode = self._tc_offset(
                     str(input_timecode),
                     framerate=fps,
-                    frame_offset=-1
+                    frame_offset=0 if ext.lower() == ".mxf" else -1
                 )
                 self.log.debug("Slate Timecode: `{}`".format(
                     offset_timecode
