@@ -797,6 +797,36 @@ def prepare_fill_values(burnin_template, data):
     return fill_values, listed_keys, missing_keys
 
 
+def _increment_timecode_by_one_frame(tc, fps):
+    """Increment a timecode value by exactly one frame.
+
+    Args:
+        tc (str | int): Timecode as "HH:MM:SS:FF" / "HH:MM:SS;FF" string,
+            or an integer frame count.
+        fps (float): Frames per second of the video.
+
+    Returns:
+        str | int: Timecode incremented by one frame, same type as input.
+    """
+    if isinstance(tc, int):
+        return tc + 1
+    fps_int = round(fps)
+    sep = ";" if ";" in tc else ":"
+    parts = tc.replace(";", ":").split(":")
+    hh, mm, ss, ff = int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3])
+    ff += 1
+    if ff >= fps_int:
+        ff = 0
+        ss += 1
+        if ss >= 60:
+            ss = 0
+            mm += 1
+            if mm >= 60:
+                mm = 0
+                hh += 1
+    return "{:02d}:{:02d}:{:02d}{}{:02d}".format(hh, mm, ss, sep, ff)
+
+
 def burnins_from_data(
     input_path,
     output_path,
@@ -808,6 +838,7 @@ def burnins_from_data(
     full_input_path=None,
     first_frame=None,
     source_ffmpeg_cmd=None,
+    adjust_timecode_offsets=False,
 ):
     """This method adds burnins to video/image file based on presets setting.
 
@@ -902,6 +933,10 @@ def burnins_from_data(
         data[CURRENT_FRAME_KEY[1:-1]] = CURRENT_FRAME_SPLITTER
 
     if frame_start_tc is not None:
+        if adjust_timecode_offsets:
+            frame_start_tc = _increment_timecode_by_one_frame(
+                frame_start_tc, data["fps"]
+            )
         data[TIMECODE_KEY[1:-1]] = TIMECODE_KEY
 
     source_timecode = video_stream.get("timecode")
@@ -917,6 +952,10 @@ def burnins_from_data(
             source_timecode = input_format.get("tags", {}).get("timecode")
 
     if source_timecode is not None:
+        if adjust_timecode_offsets:
+            source_timecode = _increment_timecode_by_one_frame(
+                source_timecode, data["fps"]
+            )
         data[SOURCE_TIMECODE_KEY[1:-1]] = SOURCE_TIMECODE_KEY
 
     clean_up_paths = []
@@ -1057,6 +1096,7 @@ if __name__ == "__main__":
         burnin_values=in_data.get("values"),
         full_input_path=in_data.get("full_input_path"),
         first_frame=in_data.get("first_frame"),
-        source_ffmpeg_cmd=in_data.get("ffmpeg_cmd")
+        source_ffmpeg_cmd=in_data.get("ffmpeg_cmd"),
+        adjust_timecode_offsets=in_data.get("adjust_timecode_offsets", False),
     )
     print("* Burnin script has finished")

@@ -1169,6 +1169,14 @@ class ExtractReviewProfileModel(BaseSettingsModel):
 class ExtractReviewModel(BaseSettingsModel):
     _isGroup = True
     enabled: bool = SettingsField(True)
+    adjust_timecode_offsets: bool = SettingsField(
+        False,
+        title="Adjust review timecode offsets",
+        description=(
+            "When enabled: burnin timecode/source_timecode are shifted +1 "
+            "frame, and MXF slate embeds timecode with no -1 frame offset."
+        ),
+    )
     profiles: list[ExtractReviewProfileModel] = SettingsField(
         default_factory=list,
         title="Profiles"
@@ -1822,6 +1830,7 @@ DEFAULT_PUBLISH_VALUES = {
     },
     "ExtractReview": {
         "enabled": True,
+        "adjust_timecode_offsets": False,
         "profiles": [
             {
                 "product_base_types": [],

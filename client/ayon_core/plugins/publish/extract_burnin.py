@@ -331,6 +331,13 @@ class ExtractBurnin(publish.Extractor):
                 )
 
                 # Data for burnin script
+                adjust_timecode_offsets = (
+                    project_settings
+                    .get("core", {})
+                    .get("publish", {})
+                    .get("ExtractReview", {})
+                    .get("adjust_timecode_offsets", False)
+                )
                 script_data = {
                     "input": temp_data["full_input_path"],
                     "output": temp_data["full_output_path"],
@@ -339,7 +346,8 @@ class ExtractBurnin(publish.Extractor):
                     "values": burnin_values,
                     "full_input_path": temp_data["full_input_paths"][0],
                     "first_frame": temp_data["first_frame"],
-                    "ffmpeg_cmd": new_repre.get("ffmpeg_cmd", "")
+                    "ffmpeg_cmd": new_repre.get("ffmpeg_cmd", ""),
+                    "adjust_timecode_offsets": adjust_timecode_offsets,
                 }
 
                 self.log.debug(

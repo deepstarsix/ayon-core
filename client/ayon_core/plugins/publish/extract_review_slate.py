@@ -178,12 +178,24 @@ class ExtractReviewSlate(publish.Extractor):
             ])
 
             # add timecode from source to the slate, substract one frame
+            # (unless adjust_timecode_offsets is on and format is MXF)
             offset_timecode = ""
             if input_timecode:
+                adjust_timecode_offsets = (
+                    instance.context.data["project_settings"]
+                    .get("core", {})
+                    .get("publish", {})
+                    .get("ExtractReview", {})
+                    .get("adjust_timecode_offsets", False)
+                )
+                frame_offset = (
+                    0 if (adjust_timecode_offsets and ext.lower() == ".mxf")
+                    else -1
+                )
                 offset_timecode = self._tc_offset(
                     str(input_timecode),
                     framerate=fps,
-                    frame_offset=-1
+                    frame_offset=frame_offset
                 )
                 self.log.debug("Slate Timecode: `{}`".format(
                     offset_timecode
