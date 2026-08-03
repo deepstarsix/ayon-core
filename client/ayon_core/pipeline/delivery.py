@@ -32,6 +32,7 @@ CSV_FIELDS = [
     "Handle Start",
     "Handle End",
     "Vendor Submission Note",
+    "Editor Notes",
 ]
 
 # Formats to track in delivery CSV
@@ -139,18 +140,30 @@ def get_delivery_csv_root(delivery_path, anatomy=None):
 
 def append_exr_to_global_csv(csv_path, row_data):
     """Append delivery information to global CSV, avoiding duplicates."""
-    # Avoid duplicates: read existing CSV and only write if not present
-    existing_rows = set()
+    existing_rows = []
+    existing_fieldnames = []
     if os.path.exists(csv_path):
         with open(csv_path, "r", newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
-            for row in reader:
-                key = tuple(row[field] for field in CSV_FIELDS)
-                existing_rows.add(key)
+            existing_fieldnames = list(reader.fieldnames or [])
+            existing_rows = list(reader)
 
+        # Upgrade header in-place when columns change (e.g. new Editor Notes).
+        if existing_fieldnames and existing_fieldnames != CSV_FIELDS:
+            with open(csv_path, mode="w", newline="", encoding="utf-8") as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=CSV_FIELDS)
+                writer.writeheader()
+                for row in existing_rows:
+                    writer.writerow({field: row.get(field, "") for field in CSV_FIELDS})
+            existing_fieldnames = list(CSV_FIELDS)
+
+    existing_keys = {
+        tuple(str(row.get(field, "")) for field in CSV_FIELDS)
+        for row in existing_rows
+    }
     key = tuple(str(row_data.get(field, "")) for field in CSV_FIELDS)
 
-    if key in existing_rows:
+    if key in existing_keys:
         return  # Don't write duplicate row
 
     write_header = not os.path.exists(csv_path)
@@ -193,6 +206,19 @@ def sort_files_by_frame(files):
     return sorted(files, key=get_frame_int)
 
 
+def _get_context_task_name(data: dict) -> str:
+    """Resolve task name from representation/template context data."""
+    if not data:
+        return ""
+
+    task = data.get("task")
+    if isinstance(task, dict):
+        return str(task.get("name") or "").strip()
+    if isinstance(task, str):
+        return task.strip()
+    return ""
+
+
 def create_submission_row(
     context: dict,
     version: str,
@@ -203,7 +229,8 @@ def create_submission_row(
     frame_end: str = "",
     handle_start: str = "",
     handle_end: str = "",
-    debug_log: List[str] = None
+    debug_log: List[str] = None,
+    anatomy_data: dict = None,
 ) -> dict:
     """
     Create a CSV row for delivery submission tracking.
@@ -219,16 +246,32 @@ def create_submission_row(
         handle_start: Handle start number
         handle_end: Handle end number
         debug_log: Optional debug log list
+        anatomy_data: Optional anatomy/template data used for delivery paths.
+            Preferred source for task name when available.
 
     Returns:
         Dictionary with CSV row data
     """
     version_padded = f"v{int(version):03}"
     folder = context.get("folder", {}).get("name", "")
+    if not folder and isinstance((anatomy_data or {}).get("folder"), dict):
+        folder = anatomy_data.get("folder", {}).get("name", "")
+
+    # Prefer anatomy/template data (same source delivery templates use),
+    # then fall back to representation context.
+    task_name = (
+        _get_context_task_name(anatomy_data)
+        or _get_context_task_name(context)
+    )
+    if task_name == "v000":
+        task_name = "zero"
 
     shot_name = f"{folder}"
     submission_status = "for review"
-    submission_filename = f"{folder}_comp_POSTER_{version_padded}"
+    if task_name:
+        submission_filename = f"{folder}_{task_name}_POSTER_{version_padded}"
+    else:
+        submission_filename = f"{folder}_POSTER_{version_padded}"
     submission_version = version_padded
     submission_format = file_format.upper()  # MOV, EXR, H264, etc.
     vendor_note = description
@@ -249,6 +292,7 @@ def create_submission_row(
         "Handle Start": handle_start,
         "Handle End": handle_end,
         "Vendor Submission Note": vendor_note,
+        "Editor Notes": "",
     }
 
 
@@ -454,7 +498,8 @@ def deliver_single_file(
             frame_start=frame_start,
             frame_end=frame_end,
             handle_start=handle_start,
-            handle_end=handle_end
+            handle_end=handle_end,
+            anatomy_data=anatomy_data,
         )
 
         delivery_root = get_delivery_csv_root(delivery_path, anatomy)
@@ -683,7 +728,8 @@ def deliver_sequence(
             frame_start=frame_start,
             frame_end=frame_end,
             handle_start=handle_start,
-            handle_end=handle_end
+            handle_end=handle_end,
+            anatomy_data=anatomy_data,
         )
 
         delivery_root = get_delivery_csv_root(delivery_path, anatomy)
