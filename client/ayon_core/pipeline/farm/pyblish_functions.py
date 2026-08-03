@@ -1096,7 +1096,7 @@ def _create_instances_for_aov(
             colorspace_data: dict = {
                 "colorspace": colorspace,
                 "config": {
-                    "path": additional_data.get("colorspaceConfig", False),
+                    "path": additional_data["colorspaceConfig"],
                     "template": additional_data["colorspaceTemplate"]
                 },
             }
