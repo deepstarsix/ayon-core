@@ -16,7 +16,7 @@ from ayon_core.lib import (
 )
 from ayon_core.pipeline import publish
 from ayon_core.pipeline.anatomy import Anatomy
-from ayon_core.pipeline.publish import KnownPublishError
+from ayon_core.pipeline.publish import PublishError
 
 
 class ExtractReviewSlate(publish.Extractor):
@@ -101,9 +101,9 @@ class ExtractReviewSlate(publish.Extractor):
 
             # Raise exception of any stream didn't define input resolution
             if input_width is None:
-                raise KnownPublishError(
-                    "FFprobe couldn't read resolution from input file: \"{}\""
-                    .format(input_path)
+                raise PublishError(
+                    "FFprobe couldn't read resolution from input file:"
+                    f" \"{input_path}\""
                 )
 
             (
