@@ -1,8 +1,8 @@
 """Collect AYON addons."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
+from typing import Optional
 
 import pyblish.api
 import ayon_api
@@ -16,12 +16,27 @@ from ayon_core.lib.ayon_info import (
 from ayon_core.addon import AddonsManager, get_bundle_information
 
 
-@dataclass
 class AddonInfo:
-    name: str
-    version: str | None
-    server_version: str | None
-    label: str | None = None
+    """Addon row for publish log.
+
+    Plain class instead of @dataclass: pyblish.api.discover() execs plugin
+    files without registering them in sys.modules[__name__], and dataclasses
+    crash on that (AttributeError on None.__dict__).
+    """
+
+    __slots__ = ("name", "version", "server_version", "label")
+
+    def __init__(
+        self,
+        name: str,
+        version: Optional[str],
+        server_version: Optional[str],
+        label: Optional[str] = None,
+    ) -> None:
+        self.name = name
+        self.version = version
+        self.server_version = server_version
+        self.label = label
 
     def get_row(
         self, name_width: int, version_width: int, server_version_width: int
