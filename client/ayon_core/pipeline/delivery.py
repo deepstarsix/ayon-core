@@ -56,6 +56,56 @@ def _copy_file(src_path, dst_path):
         shutil.copyfile(src_path, dst_path)
 
 
+def _get_delivery_batch_name(delivery_path):
+    """Folder immediately under ``_delivery`` (batch name from the directory template).
+
+    Example:
+        ``Z:/Embassy/_delivery/EMB_20260819_PO_/DNxHD/file.mov``
+        -> ``EMB_20260819_PO``
+    """
+    if not delivery_path:
+        return ""
+
+    parts = os.path.abspath(delivery_path).replace("\\", "/").split("/")
+    for index, part in enumerate(parts):
+        if part != "_delivery" or index + 1 >= len(parts):
+            continue
+        batch = parts[index + 1]
+        # Skip if the next component is the file itself
+        if not batch or "." in batch:
+            return ""
+        return batch.rstrip("_")
+    return ""
+
+
+def get_delivery_csv_path(delivery_path, anatomy=None):
+    """CSV path next to the project ``_delivery`` folder.
+
+    Named after the delivery batch directory from the anatomy template
+    (e.g. ``EMB_20260819_PO.csv``). If a numbered file for that batch already
+    exists (``EMB_20260819_PO_005.csv``), append to that file instead.
+    """
+    delivery_root = get_delivery_csv_root(delivery_path, anatomy)
+    batch_name = _get_delivery_batch_name(delivery_path)
+    csv_name = "delivery_log.csv"
+    if batch_name:
+        csv_name = "{}.csv".format(batch_name)
+        if os.path.isdir(delivery_root):
+            matches = []
+            prefix = batch_name + "_"
+            for filename in os.listdir(delivery_root):
+                if not filename.lower().endswith(".csv"):
+                    continue
+                stem = filename[:-4]
+                if stem == batch_name or stem.startswith(prefix):
+                    matches.append(filename)
+            if matches:
+                matches.sort()
+                csv_name = matches[-1]
+
+    return os.path.join(delivery_root, csv_name), delivery_root
+
+
 def get_delivery_csv_root(delivery_path, anatomy=None):
     """
     Returns the "_delivery" directory at the project level.
@@ -219,6 +269,77 @@ def _get_context_task_name(data: dict) -> str:
     return ""
 
 
+def _get_folder_name(data: dict) -> str:
+    """Resolve shot/folder name from representation/template context data.
+
+    Prefer the last component of folder path (live hierarchy) over a stored
+    ``folder[name]`` value, which on older publishes can be a task, product,
+    or other leftover from template ``used_values``.
+    """
+    if not data:
+        return ""
+
+    folder = data.get("folder")
+    if isinstance(folder, dict):
+        path = str(folder.get("path") or "").strip().replace("\\", "/")
+        if path:
+            return path.rstrip("/").split("/")[-1]
+        name = str(folder.get("name") or "").strip()
+        if name:
+            return name
+    elif isinstance(folder, str) and folder.strip():
+        return folder.strip().replace("\\", "/").rstrip("/").split("/")[-1]
+
+    asset = data.get("asset")
+    if isinstance(asset, str) and asset.strip():
+        return asset.strip()
+    return ""
+
+
+def _submission_filename_from_path(delivery_path: str) -> str:
+    """Delivered file stem, matching the anatomy file template.
+
+    Strips extension and optional frame number so a sequence
+    ``shot_comp_PO_v001.1001.exr`` becomes ``shot_comp_PO_v001``.
+    """
+    if not delivery_path:
+        return ""
+
+    basename = os.path.basename(str(delivery_path).replace("\\", "/"))
+    name, _ext = os.path.splitext(basename)
+    # Sequence template placeholder used by deliver_sequence
+    name = name.replace(".@####@", "").replace("@####@", "")
+    frame = extract_frame_from_filename(basename)
+    if frame:
+        suffix = ".{}".format(frame)
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+    return name
+
+
+def _submission_format(repre: dict, ext: str) -> str:
+    """Prefer representation name (DNxHD, h264) over generic file extension."""
+    name = str((repre or {}).get("name") or "").strip()
+    ext = (ext or "").strip()
+    if name:
+        short_name = name.split("_")[0]
+        if short_name.lower() not in {"", "delivery", "thumbnail"}:
+            if short_name.lower() != ext.lower():
+                return short_name.upper()
+            return ext.upper()
+    return ext.upper()
+
+
+def _pad_version(version) -> str:
+    try:
+        return "v{:03d}".format(int(version))
+    except (TypeError, ValueError):
+        text = str(version or "").strip()
+        if text.lower().startswith("v"):
+            return text
+        return text
+
+
 def create_submission_row(
     context: dict,
     version: str,
@@ -231,6 +352,8 @@ def create_submission_row(
     handle_end: str = "",
     debug_log: List[str] = None,
     anatomy_data: dict = None,
+    delivery_path: str = "",
+    repre: dict = None,
 ) -> dict:
     """
     Create a CSV row for delivery submission tracking.
@@ -247,18 +370,20 @@ def create_submission_row(
         handle_end: Handle end number
         debug_log: Optional debug log list
         anatomy_data: Optional anatomy/template data used for delivery paths.
-            Preferred source for task name when available.
+            Preferred source for shot and task name when available.
+        delivery_path: Actual destination path from the delivery file template.
+        repre: Representation entity, used for format label.
 
     Returns:
         Dictionary with CSV row data
     """
-    version_padded = f"v{int(version):03}"
-    folder = context.get("folder", {}).get("name", "")
-    if not folder and isinstance((anatomy_data or {}).get("folder"), dict):
-        folder = anatomy_data.get("folder", {}).get("name", "")
-
+    version_padded = _pad_version(version)
     # Prefer anatomy/template data (same source delivery templates use),
     # then fall back to representation context.
+    folder = (
+        _get_folder_name(anatomy_data)
+        or _get_folder_name(context)
+    )
     task_name = (
         _get_context_task_name(anatomy_data)
         or _get_context_task_name(context)
@@ -266,14 +391,18 @@ def create_submission_row(
     if task_name == "v000":
         task_name = "zero"
 
-    shot_name = f"{folder}"
+    shot_name = folder
     submission_status = "for review"
-    if task_name:
-        submission_filename = f"{folder}_{task_name}_POSTER_{version_padded}"
-    else:
-        submission_filename = f"{folder}_POSTER_{version_padded}"
+    submission_filename = _submission_filename_from_path(delivery_path)
+    if not submission_filename:
+        if task_name:
+            submission_filename = "{}_{}_POSTER_{}".format(
+                folder, task_name, version_padded
+            )
+        else:
+            submission_filename = "{}_POSTER_{}".format(folder, version_padded)
     submission_version = version_padded
-    submission_format = file_format.upper()  # MOV, EXR, H264, etc.
+    submission_format = _submission_format(repre, file_format)
     vendor_note = description
 
     today = datetime.now().strftime("%Y-%m-%d")
@@ -383,6 +512,96 @@ def check_destination_path(
     return report_items
 
 
+def _version_csv_fields(repre, context, log):
+    """Description and frame/handle data from the published version."""
+    description = ""
+    frame_start = ""
+    frame_end = ""
+    handle_start = ""
+    handle_end = ""
+
+    project_name = context.get("project", {}).get("name")
+    version_id = repre.get("versionId")
+    if not (project_name and version_id):
+        return description, frame_start, frame_end, handle_start, handle_end
+
+    try:
+        version_entity = ayon_api.get_version_by_id(project_name, version_id)
+    except Exception as exc:
+        log.warning("Could not fetch version data: {}".format(exc))
+        return description, frame_start, frame_end, handle_start, handle_end
+
+    if not version_entity:
+        return description, frame_start, frame_end, handle_start, handle_end
+
+    attrib = version_entity.get("attrib") or {}
+    data = version_entity.get("data") or {}
+    description = (
+        attrib.get("description")
+        or attrib.get("comment")
+        or data.get("comment")
+        or ""
+    )
+    frame_start = str(attrib.get("frameStart") or data.get("frameStart") or "")
+    frame_end = str(attrib.get("frameEnd") or data.get("frameEnd") or "")
+    handle_start = str(
+        attrib.get("handleStart") or data.get("handleStart") or ""
+    )
+    handle_end = str(attrib.get("handleEnd") or data.get("handleEnd") or "")
+    return description, frame_start, frame_end, handle_start, handle_end
+
+
+def _log_delivery_csv(
+    repre,
+    anatomy,
+    anatomy_data,
+    delivery_path,
+    source_files,
+    ext,
+    log,
+):
+    """Append one CSV row for a delivered representation."""
+    ext = (ext or "").lower()
+    if ext not in TRACKABLE_FORMATS or not source_files:
+        return
+
+    context = repre["context"]
+    version = (
+        (anatomy_data or {}).get("version")
+        or context.get("version")
+        or ""
+    )
+    (
+        description,
+        frame_start,
+        frame_end,
+        handle_start,
+        handle_end,
+    ) = _version_csv_fields(repre, context, log)
+
+    row = create_submission_row(
+        context,
+        version,
+        ext,
+        source_files,
+        description=description,
+        frame_start=frame_start,
+        frame_end=frame_end,
+        handle_start=handle_start,
+        handle_end=handle_end,
+        anatomy_data=anatomy_data,
+        delivery_path=delivery_path,
+        repre=repre,
+    )
+
+    csv_path, delivery_root = get_delivery_csv_path(delivery_path, anatomy)
+    if not os.path.exists(delivery_root):
+        os.makedirs(delivery_root, exist_ok=True)
+
+    append_exr_to_global_csv(csv_path, row)
+    write_debug_log("", csv_path)
+
+
 def deliver_single_file(
     src_path,
     repre,
@@ -440,77 +659,16 @@ def deliver_single_file(
     log.debug("Copying single: {} -> {}".format(src_path, delivery_path))
     _copy_file(src_path, delivery_path)
 
-    # Delivery CSV logging for trackable formats
     context = repre["context"]
-    ext = context.get("ext", "").lower()
-
-    if ext in TRACKABLE_FORMATS:
-        version = context.get("version", "")
-
-        # Try to get description and frame data from version entity
-        description = ""
-        frame_start = ""
-        frame_end = ""
-        handle_start = ""
-        handle_end = ""
-
-        project_name = context.get("project", {}).get("name")
-        version_id = repre.get("versionId")
-
-        if project_name and version_id:
-            try:
-                version_entity = ayon_api.get_version_by_id(project_name, version_id)
-
-                if version_entity:
-                    # Get description/comment
-                    description = version_entity.get("attrib", {}).get("description", "")
-                    if not description:
-                        description = version_entity.get("attrib", {}).get("comment", "")
-                    if not description:
-                        description = version_entity.get("data", {}).get("comment", "")
-
-                    # Get frame data from attrib
-                    attrib = version_entity.get("attrib", {})
-                    frame_start = str(attrib.get("frameStart", ""))
-                    frame_end = str(attrib.get("frameEnd", ""))
-
-                    # Get handle data from attrib
-                    handle_start = str(attrib.get("handleStart", ""))
-                    handle_end = str(attrib.get("handleEnd", ""))
-
-                    # Alternative: try data section if not in attrib
-                    if not frame_start:
-                        data = version_entity.get("data", {})
-                        frame_start = str(data.get("frameStart", ""))
-                        frame_end = str(data.get("frameEnd", ""))
-                        handle_start = str(data.get("handleStart", ""))
-                        handle_end = str(data.get("handleEnd", ""))
-
-            except Exception as e:
-                log.warning(f"Could not fetch version data: {e}")
-
-        row = create_submission_row(
-            context,
-            version,
-            ext,
-            [src_path],
-            description=description,
-            frame_start=frame_start,
-            frame_end=frame_end,
-            handle_start=handle_start,
-            handle_end=handle_end,
-            anatomy_data=anatomy_data,
-        )
-
-        delivery_root = get_delivery_csv_root(delivery_path, anatomy)
-
-        if not os.path.exists(delivery_root):
-            os.makedirs(delivery_root, exist_ok=True)
-
-        csv_path = os.path.join(delivery_root, "delivery_log.csv")
-
-        append_exr_to_global_csv(csv_path, row)
-        write_debug_log('', csv_path)
+    _log_delivery_csv(
+        repre,
+        anatomy,
+        anatomy_data,
+        delivery_path,
+        [src_path],
+        context.get("ext", ""),
+        log,
+    )
 
     return report_items, 1
 
@@ -643,6 +801,7 @@ def deliver_sequence(
     uploaded = 0
     first_frame = min(src_collection.indexes)
     seq_files_set = set()
+    last_dst = ""
 
     for index in src_collection.indexes:
         src_padding = src_collection.format("{padding}") % index
@@ -665,82 +824,22 @@ def deliver_sequence(
                 return report_items, 0
         dst_padding = dst_collection.format("{padding}") % dst_index
         dst = "{}{}{}".format(dst_head, dst_padding, dst_tail)
+        last_dst = dst
         log.debug("Copying single: {} -> {}".format(src, dst))
         _copy_file(src, dst)
 
         uploaded += 1
 
-    # Delivery CSV logging for trackable formats (once per sequence, not per frame)
-    seq_files = list(seq_files_set)
-    ext_clean = context.get("ext", "").lower()
-
-    if ext_clean in TRACKABLE_FORMATS and seq_files:
-        version = context.get("version", "")
-
-        # Try to get description and frame data from version entity
-        description = ""
-        frame_start = ""
-        frame_end = ""
-        handle_start = ""
-        handle_end = ""
-
-        project_name = context.get("project", {}).get("name")
-        version_id = repre.get("versionId")
-
-        if project_name and version_id:
-            try:
-                version_entity = ayon_api.get_version_by_id(project_name, version_id)
-
-                if version_entity:
-                    # Get description/comment
-                    description = version_entity.get("attrib", {}).get("description", "")
-                    if not description:
-                        description = version_entity.get("attrib", {}).get("comment", "")
-                    if not description:
-                        description = version_entity.get("data", {}).get("comment", "")
-
-                    # Get frame data from attrib
-                    attrib = version_entity.get("attrib", {})
-                    frame_start = str(attrib.get("frameStart", ""))
-                    frame_end = str(attrib.get("frameEnd", ""))
-
-                    # Get handle data from attrib
-                    handle_start = str(attrib.get("handleStart", ""))
-                    handle_end = str(attrib.get("handleEnd", ""))
-
-                    # Alternative: try data section if not in attrib
-                    if not frame_start:
-                        data = version_entity.get("data", {})
-                        frame_start = str(data.get("frameStart", ""))
-                        frame_end = str(data.get("frameEnd", ""))
-                        handle_start = str(data.get("handleStart", ""))
-                        handle_end = str(data.get("handleEnd", ""))
-
-            except Exception as e:
-                log.warning(f"Could not fetch version data: {e}")
-
-        row = create_submission_row(
-            context,
-            version,
-            ext_clean,
-            seq_files,
-            description=description,
-            frame_start=frame_start,
-            frame_end=frame_end,
-            handle_start=handle_start,
-            handle_end=handle_end,
-            anatomy_data=anatomy_data,
-        )
-
-        delivery_root = get_delivery_csv_root(delivery_path, anatomy)
-
-        if not os.path.exists(delivery_root):
-            os.makedirs(delivery_root, exist_ok=True)
-
-        csv_path = os.path.join(delivery_root, "delivery_log.csv")
-
-        append_exr_to_global_csv(csv_path, row)
-        write_debug_log('', csv_path)
+    # One CSV row per sequence, not per frame
+    _log_delivery_csv(
+        repre,
+        anatomy,
+        anatomy_data,
+        last_dst or delivery_path,
+        list(seq_files_set),
+        context.get("ext", ""),
+        log,
+    )
 
     return report_items, uploaded
 
