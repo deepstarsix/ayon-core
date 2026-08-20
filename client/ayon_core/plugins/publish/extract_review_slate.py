@@ -69,11 +69,22 @@ class ExtractReviewSlate(publish.Extractor):
             if "slate-frame" not in p_tags:
                 continue
 
+            # Image sequences also get a slate-frame tag (the extra EXR at
+            # start-1). This plugin only prepends a PNG onto review movies.
+            repre_files = repre.get("files")
+            if not isinstance(repre_files, str):
+                self.log.debug(
+                    "Skipping sequence representation '{}'".format(
+                        repre.get("name")
+                    )
+                )
+                continue
+
             # get repre file
             stagingdir = repre["stagingDir"]
-            input_file = "{0}".format(repre["files"])
+            input_file = "{0}".format(repre_files)
             input_path = os.path.join(
-                os.path.normpath(stagingdir), repre["files"])
+                os.path.normpath(stagingdir), repre_files)
             self.log.debug("__ input_path: {}".format(input_path))
 
             ffprobe_data = get_ffprobe_data(
